@@ -6,9 +6,15 @@ from dataclasses import dataclass
 
 import aiohttp
 
-from station_data import LINE_IDS
+from station_data import LINE_IDS, LINES
 
 logger = logging.getLogger(__name__)
+
+# Stations unique to each branch (used to determine which branch a train is on)
+_LINE5_MACHEON_STATIONS = set(LINES["5호선(마천)"]) - set(LINES["5호선"])
+_LINE5_HANAM_STATIONS = set(LINES["5호선"]) - set(LINES["5호선(마천)"])
+_LINE2_SEONGSU_STATIONS = set(LINES["2호선(성수지선)"]) - set(LINES["2호선"])
+_LINE2_SINJEONG_STATIONS = set(LINES["2호선(신정지선)"]) - set(LINES["2호선"])
 
 API_BASE = "http://swopenAPI.seoul.go.kr/api/subway"
 
@@ -56,6 +62,21 @@ def _parse_station_count(message: str) -> int:
     return 999
 
 
+def _resolve_branch(subway_id: str, destination: str) -> str | None:
+    """For lines with branches, determine the specific branch from the destination."""
+    if subway_id == "1005":
+        if destination in _LINE5_MACHEON_STATIONS:
+            return "5호선(마천)"
+        if destination in _LINE5_HANAM_STATIONS:
+            return "5호선"
+    elif subway_id == "1002":
+        if destination in _LINE2_SEONGSU_STATIONS:
+            return "2호선(성수지선)"
+        if destination in _LINE2_SINJEONG_STATIONS:
+            return "2호선(신정지선)"
+    return None
+
+
 async def get_realtime_arrivals(
     api_key: str, station_name: str
 ) -> list[ArrivalInfo]:
@@ -98,11 +119,13 @@ async def get_realtime_arrivals(
             seconds = 0
 
         subway_id = item.get("subwayId", "")
+        destination = item.get("bstatnNm", "")
+        line_name = _resolve_branch(subway_id, destination) or LINE_IDS.get(subway_id, subway_id)
         info = ArrivalInfo(
-            line_name=LINE_IDS.get(subway_id, subway_id),
+            line_name=line_name,
             station_name=item.get("statnNm", station_name),
             direction=item.get("updnLine", ""),
-            destination=item.get("bstatnNm", ""),
+            destination=destination,
             arrival_message=item.get("arvlMsg2", ""),
             arrival_seconds=seconds,
             train_type=item.get("btrainSttus", "일반") or "일반",
