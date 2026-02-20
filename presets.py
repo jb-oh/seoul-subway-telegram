@@ -17,6 +17,8 @@ class Preset:
     departure: str
     arrival: str
     line: str | None = None
+    direction: str | None = None
+    destination: str | None = None
 
 
 def _user_file(user_id: int) -> Path:
@@ -43,9 +45,20 @@ def _save(user_id: int, presets: dict[str, Preset]) -> None:
         json.dump({name: asdict(p) for name, p in presets.items()}, f, ensure_ascii=False, indent=2)
 
 
-def add_preset(user_id: int, name: str, departure: str, arrival: str, line: str | None = None) -> None:
+def add_preset(
+    user_id: int,
+    name: str,
+    departure: str,
+    arrival: str,
+    line: str | None = None,
+    direction: str | None = None,
+    destination: str | None = None,
+) -> None:
     presets = _load(user_id)
-    presets[name] = Preset(name=name, departure=departure, arrival=arrival, line=line)
+    presets[name] = Preset(
+        name=name, departure=departure, arrival=arrival,
+        line=line, direction=direction, destination=destination,
+    )
     _save(user_id, presets)
 
 

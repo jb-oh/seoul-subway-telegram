@@ -303,6 +303,33 @@ def resolve_line(query: str) -> str | None:
     return None
 
 
+def train_reaches_station(line_name: str, target: str, terminal: str, direction: str) -> bool:
+    """Check if a train terminating at `terminal` will pass through `target`.
+
+    Compares station indices on the line:
+    - 상행/내선: train moves toward lower indices, so terminal_idx <= target_idx
+    - 하행/외선: train moves toward higher indices, so terminal_idx >= target_idx
+
+    Returns True if stations aren't found on the line (fail-open).
+    """
+    stations = LINES.get(line_name)
+    if not stations:
+        return True
+
+    try:
+        target_idx = stations.index(target)
+        terminal_idx = stations.index(terminal)
+    except ValueError:
+        return True
+
+    if direction in ("상행", "내선"):
+        return terminal_idx <= target_idx
+    elif direction in ("하행", "외선"):
+        return terminal_idx >= target_idx
+
+    return True
+
+
 def search_station(query: str) -> list[str]:
     """Search for station names containing the query string."""
     global _station_to_lines
