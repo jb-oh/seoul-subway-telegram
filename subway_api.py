@@ -16,7 +16,7 @@ _LINE5_HANAM_STATIONS = set(LINES["5호선"]) - set(LINES["5호선(마천)"])
 _LINE2_SEONGSU_STATIONS = set(LINES["2호선(성수지선)"]) - set(LINES["2호선"])
 _LINE2_SINJEONG_STATIONS = set(LINES["2호선(신정지선)"]) - set(LINES["2호선"])
 
-API_BASE = "https://swopenAPI.seoul.go.kr/api/subway"
+API_BASE = "http://swopenAPI.seoul.go.kr/api/subway"
 
 # Regex for "N번째 전역" pattern in arvlMsg2
 _STATION_COUNT_RE = re.compile(r"(\d+)번째\s*전역")
