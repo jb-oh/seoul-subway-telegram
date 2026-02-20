@@ -42,24 +42,35 @@ def format_arrivals(arrivals: list[subway_api.ArrivalInfo], limit: int = MAX_RES
     lines = []
     for i, a in enumerate(arrivals[:limit], 1):
         express = " 🚄급행" if a.train_type == "급행" else ""
+        if a.arrival_seconds > 0:
+            time_info = f"⏱ {a.arrival_display} — {a.arrival_message}"
+        else:
+            time_info = f"⏱ {a.arrival_display}"
         lines.append(
             f"{i}. [{a.line_name}] {a.destination}행 ({a.direction}){express}\n"
-            f"   ⏱ {a.arrival_display} — {a.arrival_message}"
+            f"   {time_info}"
         )
     return "\n\n".join(lines)
 
 
-async def query_route(departure: str, arrival: str) -> str:
+async def query_route(departure: str, arrival: str, line: str | None = None) -> str:
     """Query arrivals from departure toward arrival and return formatted text."""
-    result = station_data.find_common_line(departure, arrival)
-    if not result:
-        return (
-            f"❌ '{departure}'과(와) '{arrival}' 사이의 직통 노선을 찾을 수 없습니다.\n"
-            "(No direct line found between these stations.)\n\n"
-            "역 이름을 확인해 주세요. 환승이 필요한 경우 각 구간을 별도로 조회해 주세요."
-        )
-
-    line_name, direction = result
+    if line:
+        direction = station_data.find_direction(departure, arrival, line)
+        if not direction:
+            return (
+                f"❌ '{departure}'과(와) '{arrival}'은(는) {line}에서 찾을 수 없습니다."
+            )
+        line_name = line
+    else:
+        result = station_data.find_common_line(departure, arrival)
+        if not result:
+            return (
+                f"❌ '{departure}'과(와) '{arrival}' 사이의 직통 노선을 찾을 수 없습니다.\n"
+                "(No direct line found between these stations.)\n\n"
+                "역 이름을 확인해 주세요. 환승이 필요한 경우 각 구간을 별도로 조회해 주세요."
+            )
+        line_name, direction = result
 
     arrivals = await subway_api.get_realtime_arrivals(SEOUL_API_KEY, departure)
     if not arrivals:
@@ -83,10 +94,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "🚇 *서울 지하철 도착 알리미* (Seoul Subway Bot)\n\n"
         "*Commands:*\n"
-        "/arrivals `<역이름>` — 해당 역 실시간 도착 정보\n"
-        "/route `<출발역>` `<도착역>` — 출발역→도착역 방면 다음 열차 3편\n\n"
+        "/arrivals `<역이름>` `[호선]` — 해당 역 실시간 도착 정보\n"
+        "/route `<출발역>` `<도착역>` `[호선]` — 출발역→도착역 방면 다음 열차 3편\n\n"
         "*Presets:*\n"
-        "/addpreset `<이름>` `<출발역>` `<도착역>` — 프리셋 저장\n"
+        "/addpreset `<이름>` `<출발역>` `<도착역>` `[호선]` — 프리셋 저장\n"
         "/presets — 저장된 프리셋 목록\n"
         "/go `<이름>` — 프리셋 실행\n"
         "/delpreset `<이름>` — 프리셋 삭제\n"
@@ -94,8 +105,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/evening — 'evening' 프리셋 실행\n\n"
         "*Examples:*\n"
         "`/arrivals 강남`\n"
+        "`/arrivals 강남 신분당선`\n"
         "`/route 강남 서울역`\n"
-        "`/addpreset morning 강남 서울역`\n"
+        "`/route 강남 양재 신분당`\n"
+        "`/addpreset morning 강남 양재 신분당선`\n"
         "`/morning`"
     )
     assert update.message
@@ -103,13 +116,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_arrivals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show all upcoming arrivals at a station."""
+    """Show all upcoming arrivals at a station, optionally filtered by line."""
     assert update.message
     if not context.args:
-        await update.message.reply_text("사용법: /arrivals <역이름>\n예: /arrivals 강남")
+        await update.message.reply_text("사용법: /arrivals <역이름> [호선]\n예: /arrivals 강남\n예: /arrivals 강남 2호선")
         return
 
     station = context.args[0]
+    line = None
+    if len(context.args) >= 2:
+        line = station_data.resolve_line(context.args[1])
+        if not line:
+            await update.message.reply_text(f"'{context.args[1]}' 노선을 찾을 수 없습니다.")
+            return
 
     # Validate station exists in our data
     known_lines = station_data.get_station_lines(station)
@@ -124,13 +143,23 @@ async def cmd_arrivals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text(f"'{station}' 역을 찾을 수 없습니다.")
         return
 
+    if line and line not in known_lines:
+        await update.message.reply_text(
+            f"'{station}'역은 {line}에 없습니다.\n"
+            f"이용 가능 노선: {', '.join(known_lines)}"
+        )
+        return
+
     arrivals = await subway_api.get_realtime_arrivals(SEOUL_API_KEY, station)
     if not arrivals:
         await update.message.reply_text(f"⚠️ '{station}'역 실시간 도착 정보를 가져올 수 없습니다.")
         return
 
-    header = f"🚇 *{station}역* 실시간 도착 정보\n\n"
-    # Show up to 6 arrivals for a full station view
+    if line:
+        arrivals = [a for a in arrivals if line in a.line_name]
+
+    line_label = f" ({line})" if line else ""
+    header = f"🚇 *{station}역*{line_label} 실시간 도착 정보\n\n"
     await update.message.reply_text(header + format_arrivals(arrivals, limit=6), parse_mode="Markdown")
 
 
@@ -138,11 +167,18 @@ async def cmd_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show next trains from departure heading toward arrival."""
     assert update.message
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("사용법: /route <출발역> <도착역>\n예: /route 강남 서울역")
+        await update.message.reply_text("사용법: /route <출발역> <도착역> [호선]\n예: /route 강남 서울역\n예: /route 강남 서울역 신분당선")
         return
 
     departure, arrival = context.args[0], context.args[1]
-    text = await query_route(departure, arrival)
+    line = None
+    if len(context.args) >= 3:
+        line = station_data.resolve_line(context.args[2])
+        if not line:
+            await update.message.reply_text(f"'{context.args[2]}' 노선을 찾을 수 없습니다.")
+            return
+
+    text = await query_route(departure, arrival, line)
     await update.message.reply_text(text)
 
 
@@ -151,11 +187,19 @@ async def cmd_addpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     assert update.message
     if not context.args or len(context.args) < 3:
         await update.message.reply_text(
-            "사용법: /addpreset <이름> <출발역> <도착역>\n예: /addpreset morning 강남 서울역"
+            "사용법: /addpreset <이름> <출발역> <도착역> [호선]\n"
+            "예: /addpreset morning 강남 서울역\n"
+            "예: /addpreset morning 강남 양재 신분당선"
         )
         return
 
     name, departure, arrival = context.args[0], context.args[1], context.args[2]
+    line = None
+    if len(context.args) >= 4:
+        line = station_data.resolve_line(context.args[3])
+        if not line:
+            await update.message.reply_text(f"'{context.args[3]}' 노선을 찾을 수 없습니다.")
+            return
 
     # Validate stations
     for station in (departure, arrival):
@@ -163,14 +207,23 @@ async def cmd_addpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await update.message.reply_text(f"'{station}' 역을 찾을 수 없습니다.")
             return
 
-    if not station_data.find_common_line(departure, arrival):
-        await update.message.reply_text(
-            f"'{departure}'과(와) '{arrival}' 사이의 직통 노선을 찾을 수 없습니다."
-        )
-        return
+    if line:
+        direction = station_data.find_direction(departure, arrival, line)
+        if not direction:
+            await update.message.reply_text(
+                f"'{departure}'과(와) '{arrival}'은(는) {line}에서 찾을 수 없습니다."
+            )
+            return
+    else:
+        if not station_data.find_common_line(departure, arrival):
+            await update.message.reply_text(
+                f"'{departure}'과(와) '{arrival}' 사이의 직통 노선을 찾을 수 없습니다."
+            )
+            return
 
-    presets.add_preset(update.message.from_user.id, name, departure, arrival)
-    await update.message.reply_text(f"✅ 프리셋 '{name}' 저장 완료: {departure} → {arrival}")
+    presets.add_preset(update.message.from_user.id, name, departure, arrival, line)
+    line_label = f" [{line}]" if line else ""
+    await update.message.reply_text(f"✅ 프리셋 '{name}' 저장 완료: {departure} → {arrival}{line_label}")
 
 
 async def cmd_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -183,7 +236,8 @@ async def cmd_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     lines = [f"📋 *저장된 프리셋:*\n"]
     for p in user_presets:
-        lines.append(f"• *{p.name}*: {p.departure} → {p.arrival}")
+        line_label = f" [{p.line}]" if p.line else ""
+        lines.append(f"• *{p.name}*: {p.departure} → {p.arrival}{line_label}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
@@ -200,7 +254,7 @@ async def cmd_go(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"'{name}' 프리셋을 찾을 수 없습니다.\n/presets 로 목록을 확인하세요.")
         return
 
-    text = await query_route(preset.departure, preset.arrival)
+    text = await query_route(preset.departure, preset.arrival, preset.line)
     await update.message.reply_text(text)
 
 
@@ -228,7 +282,7 @@ async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "/addpreset morning <출발역> <도착역> 으로 먼저 등록해 주세요."
         )
         return
-    text = await query_route(preset.departure, preset.arrival)
+    text = await query_route(preset.departure, preset.arrival, preset.line)
     await update.message.reply_text(text)
 
 
@@ -242,7 +296,7 @@ async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "/addpreset evening <출발역> <도착역> 으로 먼저 등록해 주세요."
         )
         return
-    text = await query_route(preset.departure, preset.arrival)
+    text = await query_route(preset.departure, preset.arrival, preset.line)
     await update.message.reply_text(text)
 
 
