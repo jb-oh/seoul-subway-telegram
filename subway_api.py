@@ -97,8 +97,6 @@ async def get_realtime_arrivals(
     proxy_url = os.environ.get("SEOUL_API_PROXY_URL")
     if proxy_url and proxy_secret:
         headers["X-Proxy-Secret"] = proxy_secret
-    logger.info("Fetching arrivals: %s (proxy=%s)", url, bool(proxy_url))
-
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
