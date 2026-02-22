@@ -1,6 +1,7 @@
 """Client for the Seoul Open Data real-time subway arrival API."""
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 
@@ -16,7 +17,7 @@ _LINE5_HANAM_STATIONS = set(LINES["5호선"]) - set(LINES["5호선(마천)"])
 _LINE2_SEONGSU_STATIONS = set(LINES["2호선(성수지선)"]) - set(LINES["2호선"])
 _LINE2_SINJEONG_STATIONS = set(LINES["2호선(신정지선)"]) - set(LINES["2호선"])
 
-API_BASE = "http://swopenAPI.seoul.go.kr/api/subway"
+API_BASE = os.environ.get("SEOUL_API_PROXY_URL", "http://swopenAPI.seoul.go.kr/api/subway")
 
 # Regex for "N번째 전역" pattern in arvlMsg2
 _STATION_COUNT_RE = re.compile(r"(\d+)번째\s*전역")
@@ -91,9 +92,14 @@ async def get_realtime_arrivals(
     """
     url = f"{API_BASE}/{api_key}/json/realtimeStationArrival/0/20/{station_name}"
 
+    headers = {}
+    proxy_secret = os.environ.get("SEOUL_API_PROXY_SECRET")
+    if os.environ.get("SEOUL_API_PROXY_URL") and proxy_secret:
+        headers["X-Proxy-Secret"] = proxy_secret
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 if resp.status != 200:
                     logger.error("API returned status %d", resp.status)
                     return []
