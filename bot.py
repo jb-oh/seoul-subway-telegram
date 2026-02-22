@@ -181,7 +181,7 @@ async def cmd_arrivals(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    station = context.args[0]
+    station = station_data.normalize_station_name(context.args[0])
     line, direction, destination = _parse_filter_args(context.args[1:])
 
     # Validate station exists in our data
@@ -233,7 +233,8 @@ async def cmd_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    departure, arrival = context.args[0], context.args[1]
+    departure = station_data.normalize_station_name(context.args[0])
+    arrival = station_data.normalize_station_name(context.args[1])
     line, direction, destination = _parse_filter_args(context.args[2:])
 
     text = await query_route(departure, arrival, line, dir_override=direction, dest_override=destination)
@@ -251,7 +252,9 @@ async def cmd_addpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    name, departure, arrival = context.args[0], context.args[1], context.args[2]
+    name = context.args[0]
+    departure = station_data.normalize_station_name(context.args[1])
+    arrival = station_data.normalize_station_name(context.args[2])
     line, direction, destination = _parse_filter_args(context.args[3:])
 
     # Validate stations
