@@ -7,3 +7,4 @@ dist/
 build/
 .venv/
 venv/
+seoul-api-proxy/
