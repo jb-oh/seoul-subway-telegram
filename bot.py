@@ -20,6 +20,7 @@ from telegram.ext import (
 import presets
 import station_data
 import subway_api
+import timetable_api
 
 load_dotenv()
 
@@ -149,7 +150,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/arrivals `<역이름>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "  해당 역 실시간 도착 정보 (방향/종착역 필터 가능)\n"
         "/route `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
-        "  출발역→도착역 방면 다음 열차 3편\n\n"
+        "  출발역→도착역 방면 다음 열차 3편\n"
+        "/timetable `<역이름>` `[호선]` `[상행/하행]`\n"
+        "  역 시간표 조회 (첫차/막차, 다음 열차)\n\n"
         "*프리셋:*\n"
         "/addpreset `<이름>` `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "/presets — 저장된 프리셋 목록\n"
@@ -159,6 +162,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/arrivals 강남`\n"
         "`/arrivals 강남 4호선 상행`\n"
         "`/route 강남 서울역`\n"
+        "`/timetable 강남 2호선 외선`\n"
         "`/addpreset 출근 정자 강남 수인분당선 상행`\n"
         "`/출근`"
     )
@@ -236,6 +240,72 @@ async def cmd_route(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = await query_route(departure, arrival, line, dir_override=direction, dest_override=destination)
     await update.message.reply_text(text)
+
+
+async def cmd_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show scheduled timetable for a station (first/last train + upcoming)."""
+    assert update.message
+    if not context.args:
+        await update.message.reply_text(
+            "사용법: /timetable <역이름> [호선] [상행/하행]\n"
+            "예: /timetable 강남\n"
+            "예: /timetable 강남 2호선 외선\n\n"
+            "ℹ️ 서울교통공사 1~8호선만 지원합니다."
+        )
+        return
+
+    station = station_data.normalize_station_name(context.args[0])
+    line, direction, _ = _parse_filter_args(context.args[1:])
+
+    result = await timetable_api.get_station_fr_code(SEOUL_API_KEY, station, line)
+    if not result:
+        await update.message.reply_text(
+            f"'{station}'역 시간표를 찾을 수 없습니다.\n"
+            "서울교통공사 1~8호선만 지원합니다."
+        )
+        return
+
+    fr_code, resolved_line = result
+    weekday_code, weekday_label = timetable_api.get_weekday_type()
+
+    if direction:
+        directions = [(timetable_api.direction_to_code(direction), direction)]
+    else:
+        label_1 = timetable_api.direction_code_to_label(1, resolved_line)
+        label_2 = timetable_api.direction_code_to_label(2, resolved_line)
+        directions = [(1, label_1), (2, label_2)]
+
+    parts = [f"🕐 {station}역 시간표 ({resolved_line}, {weekday_label})\n"]
+
+    for dir_code, dir_label in directions:
+        timetable = await timetable_api.get_timetable(
+            SEOUL_API_KEY, fr_code, weekday_code, dir_code
+        )
+        if not timetable:
+            parts.append(f"\n📌 {dir_label}: 시간표 정보 없음\n")
+            continue
+
+        first, last = timetable_api.get_first_last(timetable)
+        upcoming = timetable_api.get_upcoming(timetable, count=5)
+
+        parts.append(f"\n📌 {dir_label}")
+        if first and last:
+            parts.append(
+                f"  첫차: {first.departure_display} ({first.destination}행)"
+                f" / 막차: {last.departure_display} ({last.destination}행)"
+            )
+
+        if upcoming:
+            parts.append("  ⏭ 다음 열차:")
+            for i, entry in enumerate(upcoming, 1):
+                express = " 🚄급행" if entry.is_express else ""
+                parts.append(
+                    f"  {i}. {entry.departure_display} → {entry.destination}행{express}"
+                )
+        else:
+            parts.append("  금일 운행이 종료되었습니다.")
+
+    await update.message.reply_text("\n".join(parts))
 
 
 async def cmd_addpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -349,6 +419,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("arrivals", cmd_arrivals))
     app.add_handler(CommandHandler("route", cmd_route))
+    app.add_handler(CommandHandler("timetable", cmd_timetable))
     app.add_handler(CommandHandler("addpreset", cmd_addpreset))
     app.add_handler(CommandHandler("presets", cmd_presets))
     app.add_handler(CommandHandler("delpreset", cmd_delpreset))
