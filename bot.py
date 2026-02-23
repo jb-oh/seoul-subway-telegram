@@ -13,6 +13,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 import presets
@@ -66,7 +68,7 @@ def _parse_filter_args(args: list[str]) -> tuple[str | None, str | None, str | N
 def format_arrivals(arrivals: list[subway_api.ArrivalInfo], limit: int = MAX_RESULTS) -> str:
     """Format a list of arrivals into a readable message."""
     if not arrivals:
-        return "도착 예정 열차가 없습니다. (No upcoming trains found.)"
+        return "도착 예정 열차가 없습니다."
 
     lines = []
     for i, a in enumerate(arrivals[:limit], 1):
@@ -105,7 +107,6 @@ async def query_route(
         if not result:
             return (
                 f"❌ '{departure}'과(와) '{arrival}' 사이의 직통 노선을 찾을 수 없습니다.\n"
-                "(No direct line found between these stations.)\n\n"
                 "역 이름을 확인해 주세요. 환승이 필요한 경우 각 구간을 별도로 조회해 주세요."
             )
         line_name, direction = result
@@ -143,27 +144,23 @@ async def query_route(
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message with usage instructions."""
     text = (
-        "🚇 *서울 지하철 도착 알리미* (Seoul Subway Bot)\n\n"
-        "*Commands:*\n"
+        "🚇 *서울 지하철 도착 알리미*\n\n"
+        "*명령어:*\n"
         "/arrivals `<역이름>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "  해당 역 실시간 도착 정보 (방향/종착역 필터 가능)\n"
         "/route `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "  출발역→도착역 방면 다음 열차 3편\n\n"
-        "*Presets:*\n"
+        "*프리셋:*\n"
         "/addpreset `<이름>` `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "/presets — 저장된 프리셋 목록\n"
-        "/go `<이름>` — 프리셋 실행\n"
         "/delpreset `<이름>` — 프리셋 삭제\n"
-        "/morning — 'morning' 프리셋 실행\n"
-        "/evening — 'evening' 프리셋 실행\n\n"
-        "*Examples:*\n"
+        "`/<이름>` — 저장된 프리셋 실행\n\n"
+        "*사용 예시:*\n"
         "`/arrivals 강남`\n"
         "`/arrivals 강남 4호선 상행`\n"
-        "`/arrivals 강남 4호선 당고개행`\n"
         "`/route 강남 서울역`\n"
-        "`/route 강남 서울역 4호선 당고개행`\n"
-        "`/addpreset morning 정자 강남 수인분당선 상행`\n"
-        "`/morning`"
+        "`/addpreset 출근 정자 강남 수인분당선 상행`\n"
+        "`/출근`"
     )
     assert update.message
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -247,8 +244,8 @@ async def cmd_addpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not context.args or len(context.args) < 3:
         await update.message.reply_text(
             "사용법: /addpreset <이름> <출발역> <도착역> [호선] [상행/하행] [종착역행]\n"
-            "예: /addpreset morning 강남 서울역\n"
-            "예: /addpreset morning 정자 강남 수인분당선 상행"
+            "예: /addpreset 출근 강남 서울역\n"
+            "예: /addpreset 출근 정자 강남 수인분당선 상행"
         )
         return
 
@@ -314,26 +311,6 @@ async def cmd_presets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def cmd_go(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Execute a saved preset."""
-    assert update.message
-    if not context.args:
-        await update.message.reply_text("사용법: /go <프리셋이름>\n예: /go morning")
-        return
-
-    name = context.args[0]
-    preset = presets.get_preset(update.message.from_user.id, name)
-    if not preset:
-        await update.message.reply_text(f"'{name}' 프리셋을 찾을 수 없습니다.\n/presets 로 목록을 확인하세요.")
-        return
-
-    text = await query_route(
-        preset.departure, preset.arrival, preset.line,
-        dir_override=preset.direction, dest_override=preset.destination,
-    )
-    await update.message.reply_text(text)
-
-
 async def cmd_delpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Delete a saved preset."""
     assert update.message
@@ -348,33 +325,14 @@ async def cmd_delpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(f"'{name}' 프리셋을 찾을 수 없습니다.")
 
 
-async def cmd_morning(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shortcut for /go morning."""
-    assert update.message
-    preset = presets.get_preset(update.message.from_user.id, "morning")
+async def cmd_preset_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /<preset_name> as a shortcut to run a saved preset."""
+    assert update.message and update.message.text
+    name = update.message.text.split()[0].lstrip("/")
+    preset = presets.get_preset(update.message.from_user.id, name)
     if not preset:
-        await update.message.reply_text(
-            "'morning' 프리셋이 없습니다.\n"
-            "/addpreset morning <출발역> <도착역> 으로 먼저 등록해 주세요."
-        )
         return
-    text = await query_route(
-        preset.departure, preset.arrival, preset.line,
-        dir_override=preset.direction, dest_override=preset.destination,
-    )
-    await update.message.reply_text(text)
 
-
-async def cmd_evening(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shortcut for /go evening."""
-    assert update.message
-    preset = presets.get_preset(update.message.from_user.id, "evening")
-    if not preset:
-        await update.message.reply_text(
-            "'evening' 프리셋이 없습니다.\n"
-            "/addpreset evening <출발역> <도착역> 으로 먼저 등록해 주세요."
-        )
-        return
     text = await query_route(
         preset.departure, preset.arrival, preset.line,
         dir_override=preset.direction, dest_override=preset.destination,
@@ -393,10 +351,9 @@ def main() -> None:
     app.add_handler(CommandHandler("route", cmd_route))
     app.add_handler(CommandHandler("addpreset", cmd_addpreset))
     app.add_handler(CommandHandler("presets", cmd_presets))
-    app.add_handler(CommandHandler("go", cmd_go))
     app.add_handler(CommandHandler("delpreset", cmd_delpreset))
-    app.add_handler(CommandHandler("morning", cmd_morning))
-    app.add_handler(CommandHandler("evening", cmd_evening))
+    # Catch-all: any unrecognized /command is treated as a preset name
+    app.add_handler(MessageHandler(filters.COMMAND, cmd_preset_shortcut))
 
     logger.info("Bot starting...")
     app.run_polling()
