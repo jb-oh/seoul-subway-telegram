@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 TIMETABLE_API_BASE = "http://openAPI.seoul.go.kr:8088"
 KST = ZoneInfo("Asia/Seoul")
 
+# Lines with timetable data available in SearchSTNTimeTableByFRCodeService.
+# 1, 2, 5호선 and Korail lines (수인분당선, 경의선 etc.) are NOT covered.
+SUPPORTED_LINES = {"3호선", "4호선", "6호선", "7호선", "8호선"}
+
 # Mapping from API LINE_NUM format (e.g. "02호선") to our internal names
 _LINE_NUM_ALIASES: dict[str, str] = {}
 for _n in range(1, 10):

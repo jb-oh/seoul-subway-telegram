@@ -152,7 +152,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/route `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "  출발역→도착역 방면 다음 열차 3편\n"
         "/timetable `<역이름>` `[호선]` `[상행/하행]`\n"
-        "  역 시간표 조회 (첫차/막차, 다음 열차)\n\n"
+        "  역 시간표 조회 — 3·4·6·7·8호선 지원\n\n"
         "*프리셋:*\n"
         "/addpreset `<이름>` `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "/presets — 저장된 프리셋 목록\n"
@@ -162,7 +162,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/arrivals 강남`\n"
         "`/arrivals 강남 4호선 상행`\n"
         "`/route 강남 서울역`\n"
-        "`/timetable 강남 2호선 외선`\n"
+        "`/timetable 교대 3호선`\n"
         "`/addpreset 출근 정자 강남 수인분당선 상행`\n"
         "`/출근`"
     )
@@ -248,24 +248,38 @@ async def cmd_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not context.args:
         await update.message.reply_text(
             "사용법: /timetable <역이름> [호선] [상행/하행]\n"
-            "예: /timetable 강남\n"
-            "예: /timetable 강남 2호선 외선\n\n"
-            "ℹ️ 서울교통공사 1~8호선만 지원합니다."
+            "예: /timetable 교대 3호선\n"
+            "예: /timetable 당산역 4호선 상행\n\n"
+            "ℹ️ 3·4·6·7·8호선만 지원합니다."
         )
         return
 
     station = station_data.normalize_station_name(context.args[0])
     line, direction, _ = _parse_filter_args(context.args[1:])
 
+    if line and line not in timetable_api.SUPPORTED_LINES:
+        await update.message.reply_text(
+            f"'{line}'은(는) 시간표 조회가 지원되지 않습니다.\n"
+            "3·4·6·7·8호선만 지원합니다."
+        )
+        return
+
     result = await timetable_api.get_station_fr_code(SEOUL_API_KEY, station, line)
     if not result:
         await update.message.reply_text(
             f"'{station}'역 시간표를 찾을 수 없습니다.\n"
-            "서울교통공사 1~8호선만 지원합니다."
+            "3·4·6·7·8호선만 지원합니다."
         )
         return
 
     fr_code, resolved_line = result
+
+    if resolved_line not in timetable_api.SUPPORTED_LINES:
+        await update.message.reply_text(
+            f"'{resolved_line}'은(는) 시간표 조회가 지원되지 않습니다.\n"
+            "3·4·6·7·8호선만 지원합니다."
+        )
+        return
     weekday_code, weekday_label = timetable_api.get_weekday_type()
 
     if direction:
