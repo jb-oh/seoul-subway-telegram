@@ -352,8 +352,10 @@ def main() -> None:
     app.add_handler(CommandHandler("addpreset", cmd_addpreset))
     app.add_handler(CommandHandler("presets", cmd_presets))
     app.add_handler(CommandHandler("delpreset", cmd_delpreset))
-    # Catch-all: any unrecognized /command is treated as a preset name
-    app.add_handler(MessageHandler(filters.COMMAND, cmd_preset_shortcut))
+    # Catch-all: any unrecognized /command (including Korean) is treated as a preset name
+    app.add_handler(MessageHandler(
+        filters.TEXT & filters.Regex(r"^/"), cmd_preset_shortcut,
+    ))
 
     logger.info("Bot starting...")
     app.run_polling()
