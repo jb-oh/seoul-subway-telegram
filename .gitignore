@@ -8,3 +8,4 @@ build/
 .venv/
 venv/
 seoul-api-proxy/
+.worktrees/
