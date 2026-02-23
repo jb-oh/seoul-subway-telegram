@@ -1,8 +1,8 @@
 """Client for the Seoul Open Data subway timetable API.
 
-Provides scheduled timetable lookup for Seoul Metro lines (1-8호선).
-Uses SearchInfoBySubwayNameService to resolve station names to FR_CODE,
-then SearchSTNTimeTableByFRCodeService for timetable data.
+Provides scheduled timetable lookup for Seoul Metro lines (3·4·6·7·8·9호선)
+via SearchSTNTimeTableByFRCodeService, and metropolitan rail lines
+(수인분당선, 경의중앙선, 공항철도, etc.) via the KRIC API.
 """
 
 import logging
@@ -15,11 +15,42 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 TIMETABLE_API_BASE = "http://openAPI.seoul.go.kr:8088"
+KRIC_API_BASE = "https://openapi.kric.go.kr/openapi/trainUseInfo/subwayTimetable"
 KST = ZoneInfo("Asia/Seoul")
 
-# Lines with timetable data available in SearchSTNTimeTableByFRCodeService.
-# 1, 2, 5호선 and Korail lines (수인분당선, 경의선 etc.) are NOT covered.
-SUPPORTED_LINES = {"3호선", "4호선", "6호선", "7호선", "8호선"}
+# Lines with timetable data in SearchSTNTimeTableByFRCodeService.
+# 1, 2, 5호선 return empty results from this service.
+SUPPORTED_LINES = {"3호선", "4호선", "6호선", "7호선", "8호선", "9호선"}
+
+# Metropolitan/Korail lines served via KRIC API.
+KRIC_LINES = {
+    "수인분당선", "경의중앙선", "경춘선", "서해선", "경강선",
+    "공항철도", "신분당선", "우이신설선", "신림선",
+}
+
+ALL_SUPPORTED_LINES = SUPPORTED_LINES | KRIC_LINES
+
+# KRIC day code conversion: Seoul API (1=평일, 2=토, 3=일) → KRIC (8=평일, 7=토, 9=일)
+_KRIC_DAY_CODE = {1: 8, 2: 7, 3: 9}
+
+# KRIC (railOprIsttCd, lnCd) per line name.
+# TODO: Verify exact codes after KRIC API key activation.
+KRIC_LINE_CODES: dict[str, tuple[str, str]] = {
+    "수인분당선": ("KR", "K2"),
+    "경의중앙선": ("KR", "K4"),
+    "경춘선":     ("KR", "K5"),
+    "서해선":     ("KR", "K7"),
+    "경강선":     ("KR", "K8"),
+    "공항철도":   ("AREX", "A1"),
+    "신분당선":   ("SBL", "D1"),
+    "우이신설선": ("UI", "UI"),   # TBD
+    "신림선":     ("SL", "SL"),   # TBD
+}
+
+# Static KRIC station code table: (station_name, line_name) → stinCd.
+# Populate from KRIC station code Excel (data.kric.go.kr → 자료실)
+# after obtaining KRIC_API_KEY.
+_KRIC_STATION_CODES: dict[tuple[str, str], str] = {}
 
 # Mapping from API LINE_NUM format (e.g. "02호선") to our internal names
 _LINE_NUM_ALIASES: dict[str, str] = {}
@@ -110,6 +141,16 @@ async def get_station_fr_code(
     return None
 
 
+def get_station_kric_code(station_name: str, line_name: str) -> str | None:
+    """Look up KRIC stinCd for a station on a KRIC-operated line.
+
+    Returns stinCd or None if the station is not yet in the code table.
+    Populate _KRIC_STATION_CODES from the KRIC Excel code list
+    (data.kric.go.kr → 자료실 → 운영기관,노선,역 코드정보 리스트).
+    """
+    return _KRIC_STATION_CODES.get((station_name, line_name))
+
+
 def get_weekday_type() -> tuple[int, str]:
     """Return (api_code, label) for the current day type in KST.
 
@@ -186,6 +227,100 @@ async def get_timetable(
             departure_time=item.get("LEFTTIME", ""),
             arrival_time=item.get("ARRIVETIME", ""),
             is_express=item.get("EXPRESS_YN", "G") not in ("G", ""),
+        )
+        results.append(entry)
+
+    results.sort(key=lambda e: e.departure_time)
+    return results
+
+
+async def get_timetable_kric(
+    kric_key: str,
+    line_name: str,
+    station_code: str,
+    weekday: int,
+    direction_code: int,
+) -> list[TimetableEntry]:
+    """Fetch timetable via KRIC API (metropolitan rail lines).
+
+    Requires KRIC_API_KEY from openapi.kric.go.kr.
+    Field names (trnNo, arvStinNm, dptTm, etc.) are provisional —
+    confirm against live response after key activation.
+    """
+    if not kric_key:
+        logger.warning("KRIC_API_KEY not configured; cannot fetch KRIC timetable")
+        return []
+
+    opr_cd, ln_cd = KRIC_LINE_CODES[line_name]
+    kric_day = _KRIC_DAY_CODE[weekday]
+    params = {
+        "serviceKey": kric_key,
+        "format": "json",
+        "railOprIsttCd": opr_cd,
+        "lnCd": ln_cd,
+        "stinCd": station_code,
+        "dayCd": str(kric_day),
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                KRIC_API_BASE,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    logger.error("KRIC API returned status %d", resp.status)
+                    return []
+                data = await resp.json(content_type=None)
+    except Exception:
+        logger.exception(
+            "Failed to fetch KRIC timetable for %s %s", line_name, station_code
+        )
+        return []
+
+    # TODO: Verify exact response structure after KRIC key activation.
+    # Try common response shapes seen in KRIC/data.go.kr APIs.
+    items = (
+        data.get("body", {}).get("items", [])
+        or data.get("response", {}).get("body", {}).get("items", [])
+        or data.get("items", [])
+        or []
+    )
+    if not items:
+        logger.info(
+            "No KRIC timetable data for %s %s (day=%s, dir=%s)",
+            line_name, station_code, kric_day, direction_code,
+        )
+        return []
+
+    if not isinstance(items, list):
+        items = [items]
+
+    results = []
+    for item in items:
+        # TODO: Confirm field names from live KRIC response.
+        # Provisional mapping based on KRIC API documentation patterns.
+        departure_time = item.get("dptTm", item.get("LEFTTIME", "00:00:00"))
+        # KRIC times may be 6-digit (HHMMSS) — normalize to HH:MM:SS
+        if len(departure_time) == 6 and ":" not in departure_time:
+            departure_time = f"{departure_time[:2]}:{departure_time[2:4]}:{departure_time[4:]}"
+        arrival_time = item.get("arvTm", item.get("ARRIVETIME", "00:00:00"))
+        if len(arrival_time) == 6 and ":" not in arrival_time:
+            arrival_time = f"{arrival_time[:2]}:{arrival_time[2:4]}:{arrival_time[4:]}"
+
+        # Direction filter: KRIC may include both directions in one response.
+        # TODO: Confirm field name after key activation (updnLine or similar).
+        item_dir = item.get("updnLine", item.get("INOUT_TAG", ""))
+        if item_dir and str(item_dir) != str(direction_code):
+            continue
+
+        entry = TimetableEntry(
+            train_no=item.get("trnNo", item.get("TRAIN_NO", "")),
+            destination=item.get("arvStinNm", item.get("SUBWAYENAME", "")),
+            departure_time=departure_time,
+            arrival_time=arrival_time,
+            is_express=item.get("trnsRouteNm", "") in ("급행", "특급"),
         )
         results.append(entry)
 

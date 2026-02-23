@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 SEOUL_API_KEY = os.environ["SEOUL_API_KEY"]
+KRIC_API_KEY = os.environ.get("KRIC_API_KEY", "")
 MAX_RESULTS = 3
 
 
@@ -152,7 +153,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/route `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "  출발역→도착역 방면 다음 열차 3편\n"
         "/timetable `<역이름>` `[호선]` `[상행/하행]`\n"
-        "  역 시간표 조회 — 3·4·6·7·8호선 지원\n\n"
+        "  역 시간표 조회 — 3·4·6·7·8·9호선 및 수도권 광역철도 지원\n\n"
         "*프리셋:*\n"
         "/addpreset `<이름>` `<출발역>` `<도착역>` `[호선]` `[상행/하행]` `[종착역행]`\n"
         "/presets — 저장된 프리셋 목록\n"
@@ -249,26 +250,65 @@ async def cmd_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(
             "사용법: /timetable <역이름> [호선] [상행/하행]\n"
             "예: /timetable 교대 3호선\n"
-            "예: /timetable 당산역 4호선 상행\n\n"
-            "ℹ️ 3·4·6·7·8호선만 지원합니다."
+            "예: /timetable 당산 9호선 상행\n"
+            "예: /timetable 정자 수인분당선\n\n"
+            "ℹ️ 3·4·6·7·8·9호선 및 수도권 광역철도(수인분당선, 경의중앙선, 공항철도 등) 지원"
         )
         return
 
     station = station_data.normalize_station_name(context.args[0])
     line, direction, _ = _parse_filter_args(context.args[1:])
 
-    if line and line not in timetable_api.SUPPORTED_LINES:
+    if line and line not in timetable_api.ALL_SUPPORTED_LINES:
         await update.message.reply_text(
             f"'{line}'은(는) 시간표 조회가 지원되지 않습니다.\n"
-            "3·4·6·7·8호선만 지원합니다."
+            "3·4·6·7·8·9호선, 수인분당선, 경의중앙선, 경춘선, 공항철도, 신분당선 등 지원합니다."
         )
         return
 
+    weekday_code, weekday_label = timetable_api.get_weekday_type()
+
+    # ── KRIC lines (수인분당선, 경의중앙선, 공항철도, etc.) ──────────────
+    if line in timetable_api.KRIC_LINES:
+        if not KRIC_API_KEY:
+            await update.message.reply_text(
+                f"'{line}' 시간표 서비스는 현재 준비 중입니다.\n"
+                "잠시 후 다시 시도해 주세요."
+            )
+            return
+
+        kric_code = timetable_api.get_station_kric_code(station, line)
+        if not kric_code:
+            await update.message.reply_text(
+                f"'{station}'역 {line} 시간표 코드를 찾을 수 없습니다.\n"
+                "역 이름을 확인해 주세요."
+            )
+            return
+
+        resolved_line = line
+        if direction:
+            directions = [(timetable_api.direction_to_code(direction), direction)]
+        else:
+            label_1 = timetable_api.direction_code_to_label(1, resolved_line)
+            label_2 = timetable_api.direction_code_to_label(2, resolved_line)
+            directions = [(1, label_1), (2, label_2)]
+
+        parts = [f"🕐 {station}역 시간표 ({resolved_line}, {weekday_label})\n"]
+        for dir_code, dir_label in directions:
+            timetable = await timetable_api.get_timetable_kric(
+                KRIC_API_KEY, resolved_line, kric_code, weekday_code, dir_code
+            )
+            _append_timetable_section(parts, dir_label, timetable)
+
+        await update.message.reply_text("\n".join(parts))
+        return
+
+    # ── Seoul Metro lines (3·4·6·7·8·9호선) via FR_CODE service ─────────
     result = await timetable_api.get_station_fr_code(SEOUL_API_KEY, station, line)
     if not result:
         await update.message.reply_text(
             f"'{station}'역 시간표를 찾을 수 없습니다.\n"
-            "3·4·6·7·8호선만 지원합니다."
+            "역 이름을 확인하거나, 호선을 함께 입력해 주세요."
         )
         return
 
@@ -277,10 +317,9 @@ async def cmd_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if resolved_line not in timetable_api.SUPPORTED_LINES:
         await update.message.reply_text(
             f"'{resolved_line}'은(는) 시간표 조회가 지원되지 않습니다.\n"
-            "3·4·6·7·8호선만 지원합니다."
+            "3·4·6·7·8·9호선, 수인분당선, 경의중앙선, 경춘선, 공항철도, 신분당선 등 지원합니다."
         )
         return
-    weekday_code, weekday_label = timetable_api.get_weekday_type()
 
     if direction:
         directions = [(timetable_api.direction_to_code(direction), direction)]
@@ -290,36 +329,41 @@ async def cmd_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         directions = [(1, label_1), (2, label_2)]
 
     parts = [f"🕐 {station}역 시간표 ({resolved_line}, {weekday_label})\n"]
-
     for dir_code, dir_label in directions:
         timetable = await timetable_api.get_timetable(
             SEOUL_API_KEY, fr_code, weekday_code, dir_code
         )
-        if not timetable:
-            parts.append(f"\n📌 {dir_label}: 시간표 정보 없음\n")
-            continue
-
-        first, last = timetable_api.get_first_last(timetable)
-        upcoming = timetable_api.get_upcoming(timetable, count=5)
-
-        parts.append(f"\n📌 {dir_label}")
-        if first and last:
-            parts.append(
-                f"  첫차: {first.departure_display} ({first.destination}행)"
-                f" / 막차: {last.departure_display} ({last.destination}행)"
-            )
-
-        if upcoming:
-            parts.append("  ⏭ 다음 열차:")
-            for i, entry in enumerate(upcoming, 1):
-                express = " 🚄급행" if entry.is_express else ""
-                parts.append(
-                    f"  {i}. {entry.departure_display} → {entry.destination}행{express}"
-                )
-        else:
-            parts.append("  금일 운행이 종료되었습니다.")
+        _append_timetable_section(parts, dir_label, timetable)
 
     await update.message.reply_text("\n".join(parts))
+
+
+def _append_timetable_section(
+    parts: list[str], dir_label: str, timetable: list[timetable_api.TimetableEntry]
+) -> None:
+    """Append a formatted direction section to parts in-place."""
+    if not timetable:
+        parts.append(f"\n📌 {dir_label}: 시간표 정보 없음\n")
+        return
+
+    first, last = timetable_api.get_first_last(timetable)
+    upcoming = timetable_api.get_upcoming(timetable, count=5)
+
+    parts.append(f"\n📌 {dir_label}")
+    if first and last:
+        parts.append(
+            f"  첫차: {first.departure_display} ({first.destination}행)"
+            f" / 막차: {last.departure_display} ({last.destination}행)"
+        )
+    if upcoming:
+        parts.append("  ⏭ 다음 열차:")
+        for i, entry in enumerate(upcoming, 1):
+            express = " 🚄급행" if entry.is_express else ""
+            parts.append(
+                f"  {i}. {entry.departure_display} → {entry.destination}행{express}"
+            )
+    else:
+        parts.append("  금일 운행이 종료되었습니다.")
 
 
 async def cmd_addpreset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
