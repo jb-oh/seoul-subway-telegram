@@ -331,6 +331,19 @@ async def cmd_timetable(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     fr_code, resolved_line = result
 
     if resolved_line not in timetable_api.SUPPORTED_LINES:
+        # Seoul API resolved a KRIC-served line (e.g. 1호선 at 서울역) — redirect.
+        if resolved_line in timetable_api.KRIC_S1_LINES and KRIC_API_KEY:
+            kric_code = timetable_api.get_station_kric_code(station, resolved_line)
+            if kric_code:
+                parts = [f"🕐 {station}역 시간표 ({resolved_line}, {weekday_label})\n"]
+                timetable = await timetable_api.get_timetable_kric(
+                    KRIC_API_KEY, resolved_line, kric_code, weekday_code, 1
+                )
+                dir_label = "순환" if resolved_line == "2호선" else "전방향"
+                _append_timetable_section(parts, dir_label, timetable)
+                parts.append("\nℹ️ 방향/목적지 정보는 제공되지 않습니다.")
+                await update.message.reply_text("\n".join(parts))
+                return
         await update.message.reply_text(
             f"'{resolved_line}'은(는) 시간표 조회가 지원되지 않습니다.\n"
             "1·2·3·4·6·7·8·9호선을 지원합니다."
