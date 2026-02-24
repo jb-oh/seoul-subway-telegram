@@ -1,8 +1,17 @@
 """Client for the Seoul Open Data subway timetable API.
 
 Provides scheduled timetable lookup for Seoul Metro lines (3·4·6·7·8·9호선)
-via SearchSTNTimeTableByFRCodeService, and metropolitan rail lines
-(수인분당선, 경의중앙선, 공항철도, etc.) via the KRIC API.
+via SearchSTNTimeTableByFRCodeService, and additional Seoul Metro lines
+(1·2호선) via the KRIC openapi.kric.go.kr API (railOprIsttCd=S1).
+
+KRIC API coverage confirmed:
+  - Operator S1 (서울교통공사), lines 1 and 2 only.
+  - Response: body is a list of items with fields trnNo, dptTm, arvTm,
+    stinCd, lnCd, railOprIsttCd, dayCd, dayNm.
+  - dptTm/arvTm are 6-digit HHMMSS strings (no colons).
+  - No direction or destination fields — all trains returned regardless of
+    direction; destination is not available.
+  - Lines 5–8 and all Korail/AREX/SBL lines have no data in this API.
 """
 
 import logging
@@ -22,8 +31,13 @@ KST = ZoneInfo("Asia/Seoul")
 # 1, 2, 5호선 return empty results from this service.
 SUPPORTED_LINES = {"3호선", "4호선", "6호선", "7호선", "8호선", "9호선"}
 
-# Metropolitan/Korail lines served via KRIC API.
-KRIC_LINES = {
+# Lines served via KRIC S1 API (서울교통공사).
+# These return departure times only — no direction or destination fields.
+KRIC_S1_LINES = {"1호선", "2호선"}
+
+# Lines intended for future KRIC integration (currently no API data available).
+# Korail-operated metro lines (수인분당선 etc.) are NOT in KRIC subwayTimetable.
+KRIC_LINES = KRIC_S1_LINES | {
     "수인분당선", "경의중앙선", "경춘선", "서해선", "경강선",
     "공항철도", "신분당선", "우이신설선", "신림선",
 }
@@ -34,23 +48,98 @@ ALL_SUPPORTED_LINES = SUPPORTED_LINES | KRIC_LINES
 _KRIC_DAY_CODE = {1: 8, 2: 7, 3: 9}
 
 # KRIC (railOprIsttCd, lnCd) per line name.
-# TODO: Verify exact codes after KRIC API key activation.
+# Confirmed working: S1/1 (1호선), S1/2 (2호선).
+# Korail lines (KR) have no data in KRIC subwayTimetable endpoint.
 KRIC_LINE_CODES: dict[str, tuple[str, str]] = {
-    "수인분당선": ("KR", "K2"),
+    "1호선":     ("S1", "1"),    # confirmed — Seoul core (서울역~청량리)
+    "2호선":     ("S1", "2"),    # confirmed — full circular line
+    "수인분당선": ("KR", "K2"),   # TODO: no KRIC data for KR lines yet
     "경의중앙선": ("KR", "K4"),
     "경춘선":     ("KR", "K5"),
     "서해선":     ("KR", "K7"),
     "경강선":     ("KR", "K8"),
     "공항철도":   ("AREX", "A1"),
     "신분당선":   ("SBL", "D1"),
-    "우이신설선": ("UI", "UI"),   # TBD
-    "신림선":     ("SL", "SL"),   # TBD
+    "우이신설선": ("UI", "UI"),
+    "신림선":     ("SL", "SL"),
 }
 
 # Static KRIC station code table: (station_name, line_name) → stinCd.
-# Populate from KRIC station code Excel (data.kric.go.kr → 자료실)
-# after obtaining KRIC_API_KEY.
-_KRIC_STATION_CODES: dict[tuple[str, str], str] = {}
+#
+# 1호선 codes (S1/1): Seoul Metro-operated segment only (서울역 ~ 청량리).
+# Korail operates the extensions north of 도봉산 and south of 서울역;
+# those stations have no data in KRIC subwayTimetable.
+#
+# 2호선 codes (S1/2): full circular line including branch lines.
+# Outer ring: 201 (시청) → 242 (충정로) in 외선 direction.
+# Branch — 성수지선: 244–247. Branch — 신도림지선: 248–250.
+_KRIC_STATION_CODES: dict[tuple[str, str], str] = {
+    # ── 1호선 (S1/1, stinCd 150–159) ──────────────────────────────────
+    ("서울역",   "1호선"): "150",
+    ("시청",     "1호선"): "151",
+    ("종각",     "1호선"): "152",
+    ("종로3가",  "1호선"): "153",
+    ("종로5가",  "1호선"): "154",
+    ("동대문",   "1호선"): "155",
+    ("동묘앞",   "1호선"): "156",
+    ("신설동",   "1호선"): "157",
+    ("제기동",   "1호선"): "158",
+    ("청량리",   "1호선"): "159",
+
+    # ── 2호선 (S1/2, stinCd 201–250) ─────────────────────────────────
+    # Outer ring (외선 direction, clockwise from 시청):
+    ("시청",          "2호선"): "201",
+    ("을지로입구",    "2호선"): "202",
+    ("을지로3가",     "2호선"): "203",
+    ("을지로4가",     "2호선"): "204",
+    ("동대문역사문화공원", "2호선"): "205",
+    ("신당",          "2호선"): "206",
+    ("상왕십리",      "2호선"): "207",
+    ("왕십리",        "2호선"): "208",
+    ("한양대",        "2호선"): "209",
+    ("뚝섬",          "2호선"): "210",
+    ("성수",          "2호선"): "211",
+    ("건대입구",      "2호선"): "212",
+    ("구의",          "2호선"): "213",
+    ("강변",          "2호선"): "214",
+    ("잠실나루",      "2호선"): "215",
+    ("잠실",          "2호선"): "216",
+    ("잠실새내",      "2호선"): "217",
+    ("종합운동장",    "2호선"): "218",
+    ("삼성",          "2호선"): "219",
+    ("선릉",          "2호선"): "220",
+    ("역삼",          "2호선"): "221",
+    ("강남",          "2호선"): "222",
+    ("교대",          "2호선"): "223",
+    ("방배",          "2호선"): "224",
+    ("사당",          "2호선"): "225",
+    ("낙성대",        "2호선"): "226",
+    ("서울대입구",    "2호선"): "227",
+    ("봉천",          "2호선"): "228",
+    ("신림",          "2호선"): "229",
+    ("신대방",        "2호선"): "230",
+    ("구로디지털단지","2호선"): "231",
+    ("대림",          "2호선"): "232",
+    ("신도림",        "2호선"): "233",
+    ("문래",          "2호선"): "234",
+    ("영등포구청",    "2호선"): "235",
+    ("당산",          "2호선"): "236",
+    ("합정",          "2호선"): "237",
+    ("홍대입구",      "2호선"): "238",
+    ("신촌",          "2호선"): "239",
+    ("이대",          "2호선"): "240",
+    ("아현",          "2호선"): "241",
+    ("충정로",        "2호선"): "242",
+    # 성수지선 (from 성수):
+    ("용답",          "2호선"): "244",
+    ("신답",          "2호선"): "245",
+    ("용두",          "2호선"): "246",
+    ("용마산",        "2호선"): "247",
+    # 신도림지선 (from 신도림):
+    ("도림천",        "2호선"): "248",
+    ("양천구청",      "2호선"): "249",
+    ("신정네거리",    "2호선"): "250",
+}
 
 # Mapping from API LINE_NUM format (e.g. "02호선") to our internal names
 _LINE_NUM_ALIASES: dict[str, str] = {}
@@ -241,11 +330,18 @@ async def get_timetable_kric(
     weekday: int,
     direction_code: int,
 ) -> list[TimetableEntry]:
-    """Fetch timetable via KRIC API (metropolitan rail lines).
+    """Fetch timetable via KRIC API.
 
-    Requires KRIC_API_KEY from openapi.kric.go.kr.
-    Field names (trnNo, arvStinNm, dptTm, etc.) are provisional —
-    confirm against live response after key activation.
+    Confirmed working for lines in KRIC_S1_LINES (1호선, 2호선) via
+    railOprIsttCd=S1.  Response structure (verified 2025):
+      - body is a JSON array of objects (not a nested dict).
+      - Fields: trnNo, dptTm, arvTm, stinCd, lnCd, railOprIsttCd, dayCd, dayNm.
+      - dptTm / arvTm are 6-digit HHMMSS strings (no colons).
+      - No direction or destination fields — all trains for the station/day
+        are returned regardless of direction.
+
+    For lines NOT in KRIC_S1_LINES (Korail lines, etc.) this returns []
+    because _KRIC_STATION_CODES has no entries for them yet.
     """
     if not kric_key:
         logger.warning("KRIC_API_KEY not configured; cannot fetch KRIC timetable")
@@ -279,48 +375,41 @@ async def get_timetable_kric(
         )
         return []
 
-    # TODO: Verify exact response structure after KRIC key activation.
-    # Try common response shapes seen in KRIC/data.go.kr APIs.
-    items = (
-        data.get("body", {}).get("items", [])
-        or data.get("response", {}).get("body", {}).get("items", [])
-        or data.get("items", [])
-        or []
-    )
-    if not items:
+    result_code = data.get("header", {}).get("resultCode")
+    if result_code != "00":
         logger.info(
-            "No KRIC timetable data for %s %s (day=%s, dir=%s)",
-            line_name, station_code, kric_day, direction_code,
+            "KRIC API no data for %s %s (day=%s): resultCode=%s",
+            line_name, station_code, kric_day, result_code,
         )
         return []
 
-    if not isinstance(items, list):
-        items = [items]
+    # body is a JSON array directly (confirmed against live API).
+    body = data.get("body", [])
+    items: list[dict] = body if isinstance(body, list) else []
+    if not items:
+        return []
+
+    def _norm_time(t: str | None) -> str:
+        """Normalize 6-digit HHMMSS string (or None) → HH:MM:SS."""
+        if not t:
+            return ""
+        if len(t) == 6 and ":" not in t:
+            return f"{t[:2]}:{t[2:4]}:{t[4:]}"
+        return t
 
     results = []
     for item in items:
-        # TODO: Confirm field names from live KRIC response.
-        # Provisional mapping based on KRIC API documentation patterns.
-        departure_time = item.get("dptTm", item.get("LEFTTIME", "00:00:00"))
-        # KRIC times may be 6-digit (HHMMSS) — normalize to HH:MM:SS
-        if len(departure_time) == 6 and ":" not in departure_time:
-            departure_time = f"{departure_time[:2]}:{departure_time[2:4]}:{departure_time[4:]}"
-        arrival_time = item.get("arvTm", item.get("ARRIVETIME", "00:00:00"))
-        if len(arrival_time) == 6 and ":" not in arrival_time:
-            arrival_time = f"{arrival_time[:2]}:{arrival_time[2:4]}:{arrival_time[4:]}"
-
-        # Direction filter: KRIC may include both directions in one response.
-        # TODO: Confirm field name after key activation (updnLine or similar).
-        item_dir = item.get("updnLine", item.get("INOUT_TAG", ""))
-        if item_dir and str(item_dir) != str(direction_code):
-            continue
+        departure_time = _norm_time(item.get("dptTm"))
+        if not departure_time:
+            continue  # skip entries with no departure time
+        arrival_time = _norm_time(item.get("arvTm"))
 
         entry = TimetableEntry(
-            train_no=item.get("trnNo", item.get("TRAIN_NO", "")),
-            destination=item.get("arvStinNm", item.get("SUBWAYENAME", "")),
+            train_no=item.get("trnNo", ""),
+            destination="",   # KRIC S1 response has no destination field
             departure_time=departure_time,
             arrival_time=arrival_time,
-            is_express=item.get("trnsRouteNm", "") in ("급행", "특급"),
+            is_express=False,  # no express indicator in KRIC S1 response
         )
         results.append(entry)
 
