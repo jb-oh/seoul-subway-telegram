@@ -67,7 +67,8 @@ KRIC_LINE_CODES: dict[str, tuple[str, str]] = {
 # Static KRIC station code table: (station_name, line_name) → stinCd.
 #
 # 1호선 codes (S1/1): Seoul Metro-operated segment only (서울역 ~ 청량리).
-# Korail operates the extensions north of 도봉산 and south of 서울역;
+# stinCd 150–158 + 159 (non-sequential: 159=동묘앞 sits between 155 and 156).
+# Korail operates the extensions north of 청량리 and west of 서울역;
 # those stations have no data in KRIC subwayTimetable.
 #
 # 2호선 codes (S1/2): full circular line including branch lines.
@@ -75,16 +76,20 @@ KRIC_LINE_CODES: dict[str, tuple[str, str]] = {
 # Branch — 성수지선: 244–247. Branch — 신도림지선: 248–250.
 _KRIC_STATION_CODES: dict[tuple[str, str], str] = {
     # ── 1호선 (S1/1, stinCd 150–159) ──────────────────────────────────
+    # Station order verified by tracing train S910 departure times:
+    # 150(06:25)→151(06:27)→152(06:30)→153(06:32)→154(06:34)→
+    # 155(06:36)→159(06:38)→156(06:40)→157(06:42)→158(06:44)
+    # Note: stinCd 159 (동묘앞) sits between 155 (동대문) and 156 (신설동).
     ("서울역",   "1호선"): "150",
     ("시청",     "1호선"): "151",
     ("종각",     "1호선"): "152",
     ("종로3가",  "1호선"): "153",
     ("종로5가",  "1호선"): "154",
     ("동대문",   "1호선"): "155",
-    ("동묘앞",   "1호선"): "156",
-    ("신설동",   "1호선"): "157",
-    ("제기동",   "1호선"): "158",
-    ("청량리",   "1호선"): "159",
+    ("동묘앞",   "1호선"): "159",  # stinCd 159, not 156
+    ("신설동",   "1호선"): "156",  # stinCd 156, not 157
+    ("제기동",   "1호선"): "157",  # stinCd 157, not 158
+    ("청량리",   "1호선"): "158",  # stinCd 158, not 159
 
     # ── 2호선 (S1/2, stinCd 201–250) ─────────────────────────────────
     # Outer ring (외선 direction, clockwise from 시청):
