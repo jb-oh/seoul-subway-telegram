@@ -378,7 +378,8 @@ def _append_timetable_section(
         for i, entry in enumerate(upcoming, 1):
             express = " 🚄급행" if entry.is_express else ""
             dest = f" → {entry.destination}행" if entry.destination else ""
-            parts.append(f"  {i}. {entry.departure_display}{dest}{express}")
+            trn = f" ({entry.train_no})" if entry.train_no else ""
+            parts.append(f"  {i}. {entry.departure_display}{trn}{dest}{express}")
     else:
         parts.append("  금일 운행이 종료되었습니다.")
 
